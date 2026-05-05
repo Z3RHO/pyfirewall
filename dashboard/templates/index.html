@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang='es'>
+<head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<title>PyFirewall Dashboard</title>
+<script src='https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js'></script>
+<script src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js'></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: monospace; background:#0a0e1a; color:#e0e6f0; }
+.header { background:#111827; border-bottom:1px solid #1e3a5f; padding:16px 24px; display:flex; align-items:center; gap:12px; }
+.header h1 { font-size:18px; color:#38bdf8; }
+.dot { width:8px; height:8px; border-radius:50%; background:#22c55e; animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; padding:16px 24px; }
+.card { background:#111827; border:1px solid #1e3a5f; border-radius:8px; padding:16px; }
+.card .label { font-size:11px; color:#64748b; margin-bottom:6px; }
+.card .value { font-size:28px; font-weight:bold; }
+.allow { color:#22c55e; } .block { color:#ef4444; } .warn { color:#f59e0b; } .total { color:#38bdf8; }
+.main { display:grid; grid-template-columns:1fr 340px; gap:12px; padding:0 24px 24px; }
+.panel { background:#111827; border:1px solid #1e3a5f; border-radius:8px; padding:16px; }
+.panel h2 { font-size:13px; color:#64748b; margin-bottom:12px; }
+.log-table { width:100%; border-collapse:collapse; font-size:12px; }
+.log-table th { text-align:left; padding:6px 8px; color:#64748b; border-bottom:1px solid #1e3a5f; }
+.log-table td { padding:5px 8px; border-bottom:1px solid #0f172a; }
+.log-table tr:hover { background:#0f172a; }
+.badge { padding:2px 8px; border-radius:4px; font-size:11px; font-weight:bold; }
+.badge-allow { background:#052e16; color:#22c55e; }
+.badge-block { background:#2d0a0a; color:#ef4444; }
+.badge-warn { background:#2d1a00; color:#f59e0b; }
+.badge-ai { background:#1a1a3a; color:#a78bfa; }
+.rules-list { list-style:none; }
+.rules-list li { padding:8px; border-bottom:1px solid #0f172a; font-size:12px; display:flex; justify-content:space-between; align-items:center; }
+.chart-wrap { height:160px; margin-bottom:16px; }
+.ai-card { background:#0f0f2a; border:1px solid #2d2d6b; border-radius:8px; padding:12px; margin-bottom:8px; font-size:12px; }
+.ai-card .ai-header { display:flex; justify-content:space-between; margin-bottom:6px; }
+.ai-card .ai-ip { color:#a78bfa; font-weight:bold; }
+.ai-card .ai-type { color:#f59e0b; font-size:11px; }
+.ai-card .ai-text { color:#cbd5e1; line-height:1.5; }
+.ai-card .ai-time { color:#475569; font-size:10px; }
+.ai-thinking { color:#64748b; font-size:12px; font-style:italic; padding:8px; }
+#ai-panel { max-height:400px; overflow-y:auto; }
+@keyframes fadeIn { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:translateY(0)} }
+.fadeIn { animation: fadeIn 0.3s ease; }
+</style>
+</head>
+<body>
+<div class='header'>
+  <div class='dot'></div>
+  <h1>PyFirewall Dashboard</h1>
+  <span style='margin-left:8px;font-size:11px;color:#a78bfa'>+ AI Analysis</span>
+  <div style='margin-left:auto;display:flex;gap:8px;align-items:center'>
+      <a href='/api/export' style='font-size:11px;color:#38bdf8;text-decoration:none;padding:4px 10px;border:1px solid #1e3a5f;border-radius:4px'>⬇ Exportar CSV</a>
+      <span style='font-size:12px;color:#64748b' id='status'>Conectando...</span>
+    </div>
+</div>
+<div class='grid'>
+  <div class='card'><div class='label'>Total paquetes</div><div class='value total' id='total'>0</div></div>
+  <div class='card'><div class='label'>Permitidos</div><div class='value allow' id='allowed'>0</div></div>
+  <div class='card'><div class='label'>Bloqueados</div><div class='value block' id='blocked'>0</div></div>
+  <div class='card'><div class='label'>Alertas IA</div><div class='value warn' id='warnings'>0</div></div>
+</div>
+<div class='main'>
+  <div style='display:flex;flex-direction:column;gap:12px'>
+    <div class='panel'>
+      <h2>Trafico en tiempo real</h2>
+      <div class='chart-wrap'><canvas id='chart'></canvas></div>
+      <table class='log-table'>
+        <thead><tr><th>Hora</th><th>Accion</th><th>Proto</th><th>Origen</th><th>Destino</th><th>Regla</th></tr></thead>
+        <tbody id='log-body'></tbody>
+      </table>
+    </div>
+    <div class='panel'>
+      <h2>Analisis IA <span class='badge badge-ai'>Claude</span></h2>
+      <div id='ai-panel'><p class='ai-thinking'>Esperando alertas para analizar...</p></div>
+    </div>
+  </div>
+  <div style='display:flex;flex-direction:column;gap:12px'>
+    <div class='panel'>
+      <h2>Reglas activas</h2>
+      <ul class='rules-list' id='rules-list'></ul>
+      <div style='margin-top:12px;border-top:1px solid #1e3a5f;padding-top:12px'>
+        <div style='font-size:11px;color:#64748b;margin-bottom:8px'>Añadir regla</div>
+        <input id='r-name' placeholder='Nombre' style='width:100%;margin-bottom:4px;background:#0a0e1a;border:1px solid #1e3a5f;color:#e0e6f0;padding:5px 8px;border-radius:4px;font-size:12px'>
+        <select id='r-action' style='width:48%;margin-bottom:4px;background:#0a0e1a;border:1px solid #1e3a5f;color:#e0e6f0;padding:5px 8px;border-radius:4px;font-size:12px'>
+          <option value='BLOCK'>BLOCK</option>
+          <option value='ALLOW'>ALLOW</option>
+        </select>
+        <select id='r-proto' style='width:48%;margin-bottom:4px;margin-left:4%;background:#0a0e1a;border:1px solid #1e3a5f;color:#e0e6f0;padding:5px 8px;border-radius:4px;font-size:12px'>
+          <option value=''>Any proto</option>
+          <option value='TCP'>TCP</option>
+          <option value='UDP'>UDP</option>
+          <option value='ICMP'>ICMP</option>
+        </select>
+        <input id='r-ip' placeholder='IP origen (opcional)' style='width:48%;margin-bottom:4px;background:#0a0e1a;border:1px solid #1e3a5f;color:#e0e6f0;padding:5px 8px;border-radius:4px;font-size:12px'>
+        <input id='r-port' placeholder='Puerto destino (opcional)' type='number' style='width:48%;margin-bottom:4px;margin-left:4%;background:#0a0e1a;border:1px solid #1e3a5f;color:#e0e6f0;padding:5px 8px;border-radius:4px;font-size:12px'>
+        <button onclick='addRule()' style='width:100%;padding:6px;background:#1e3a5f;color:#38bdf8;border:none;border-radius:4px;font-size:12px;cursor:pointer;font-family:monospace'>+ Añadir regla</button>
+      </div>
+    </div>
+    <div class='panel'>
+      <h2>IPs bloqueadas</h2>
+      <ul class='rules-list' id='blocked-list'></ul>
+    </div>
+  </div>
+</div>
+<script>
+const socket = io();
+let total=0, allowed=0, blocked=0, warnings=0;
+let chartLabels=[], chartAllow=[], chartBlock=[];
+
+const ctx = document.getElementById('chart').getContext('2d');
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: { labels: chartLabels, datasets: [
+    { label: 'Allow', data: chartAllow, borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.1)', tension: 0.4, fill: true },
+    { label: 'Block', data: chartBlock, borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)', tension: 0.4, fill: true }
+  ]},
+  options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{labels:{color:'#64748b',font:{size:11}}}}, scales:{ x:{ticks:{color:'#64748b',font:{size:10}},grid:{color:'#0f172a'}}, y:{ticks:{color:'#64748b',font:{size:10}},grid:{color:'#0f172a'}} } }
+});
+
+function addRow(e) {
+  const tbody = document.getElementById('log-body');
+  const tr = document.createElement('tr');
+  tr.className = 'fadeIn';
+  const badgeClass = e.action === 'ALLOW' ? 'badge-allow' : 'badge-block';
+  const alertBadge = e.alerts && e.alerts.length ? `<span class='badge badge-warn' style='margin-left:4px'>${e.alerts[0]}</span>` : '';
+  tr.innerHTML = `<td>${e.time}</td><td><span class='badge ${badgeClass}'>${e.action}</span>${alertBadge}</td><td>${e.protocol||'?'}</td><td>${e.src}</td><td>${e.dst}</td><td>${e.rule}</td>`;
+  tbody.insertBefore(tr, tbody.firstChild);
+  if (tbody.rows.length > 50) tbody.deleteRow(tbody.rows.length-1);
+}
+
+function addAiCard(a) {
+  const panel = document.getElementById('ai-panel');
+  const placeholder = panel.querySelector('.ai-thinking');
+  if (placeholder) placeholder.remove();
+  const div = document.createElement('div');
+  div.className = 'ai-card fadeIn';
+  div.innerHTML = `
+    <div class='ai-header'>
+      <span class='ai-ip'>${a.src_ip}</span>
+      <span class='ai-type'>${a.alert_type}</span>
+      <span class='ai-time'>${a.time}</span>
+    </div>
+    <div class='ai-text'>${a.analysis}</div>
+  `;
+  panel.insertBefore(div, panel.firstChild);
+  warnings++;
+  document.getElementById('warnings').textContent = warnings;
+}
+
+function updateStats() {
+  document.getElementById('total').textContent = total;
+  document.getElementById('allowed').textContent = allowed;
+  document.getElementById('blocked').textContent = blocked;
+}
+
+function updateChart(action) {
+  const t = new Date().toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  if (chartLabels.length === 0 || chartLabels[chartLabels.length-1] !== t) {
+    chartLabels.push(t); chartAllow.push(0); chartBlock.push(0);
+    if (chartLabels.length > 20) { chartLabels.shift(); chartAllow.shift(); chartBlock.shift(); }
+  }
+  if (action === 'ALLOW') chartAllow[chartAllow.length-1]++;
+  else chartBlock[chartBlock.length-1]++;
+  chart.update('none');
+}
+
+socket.on('connect', () => { document.getElementById('status').textContent = 'En vivo'; });
+socket.on('disconnect', () => { document.getElementById('status').textContent = 'Desconectado'; });
+
+socket.on('packet', (e) => {
+  total++;
+  if (e.action === 'ALLOW') allowed++; else blocked++;
+  updateStats();
+  addRow(e);
+  updateChart(e.action);
+});
+
+socket.on('ai_analysis', (a) => {
+  addAiCard(a);
+});
+
+function loadRules() {
+  fetch('/api/rules').then(r=>r.json()).then(rules => {
+    const ul = document.getElementById('rules-list');
+    ul.innerHTML = rules.map(r => `<li><span>${r.name}</span><div style='display:flex;gap:4px;align-items:center'><span class='badge ${r.action==="ALLOW"?"badge-allow":"badge-block"}'>${r.action}</span><span onclick='deleteRule(${r.id})' style='cursor:pointer;color:#ef4444;font-size:14px;line-height:1'>x</span></div></li>`).join('');
+  });
+}
+
+function loadBlocked() {
+  fetch('/api/blocked').then(r=>r.json()).then(ips => {
+    const ul = document.getElementById('blocked-list');
+    ul.innerHTML = ips.length ? ips.map(ip => `<li><span>${ip}</span><div style='display:flex;gap:4px;align-items:center'><span class='badge badge-block'>BLOCKED</span><span onclick='unblockIp("${ip}")' style='cursor:pointer;color:#22c55e;font-size:11px;padding:2px 6px;border:1px solid #22c55e;border-radius:4px'>desbloquear</span></div></li>`).join('') : '<li style="color:#64748b">Ninguna IP bloqueada</li>';
+  });
+}
+
+function unblockIp(ip) {
+  fetch('/api/unblock/' + ip, {method: 'POST'})
+    .then(() => loadBlocked());
+}
+
+socket.on('unblocked', () => { loadBlocked(); });
+
+loadRules();
+loadBlocked();
+setInterval(loadBlocked, 5000);
+
+function addRule() {
+  const rule = {
+    name: document.getElementById('r-name').value || 'Nueva regla',
+    action: document.getElementById('r-action').value,
+    protocol: document.getElementById('r-proto').value,
+    src_ip: document.getElementById('r-ip').value,
+    dst_port: document.getElementById('r-port').value
+  };
+  fetch('/api/rules/add', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(rule)
+  }).then(r => r.json()).then(() => { loadRules(); });
+  document.getElementById('r-name').value = '';
+  document.getElementById('r-ip').value = '';
+  document.getElementById('r-port').value = '';
+}
+
+function deleteRule(id) {
+  fetch('/api/rules/delete/' + id, {method: 'DELETE'})
+    .then(() => loadRules());
+}
+
+socket.on('rules_updated', (rules) => {
+  const ul = document.getElementById('rules-list');
+  ul.innerHTML = rules.map(r => `<li><span>${r.name}</span><div style='display:flex;gap:4px;align-items:center'><span class='badge ${r.action==="ALLOW"?"badge-allow":"badge-block"}'>${r.action}</span><span onclick='deleteRule(${r.id})' style='cursor:pointer;color:#ef4444;font-size:14px;line-height:1'>×</span></div></li>`).join('');
+});
+</script>
+</body>
+</html>

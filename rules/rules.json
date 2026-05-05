@@ -1,0 +1,13 @@
+{
+  "rules": [
+    {
+      "id": 1,
+      "name": "Block Telnet",
+      "action": "BLOCK",
+      "protocol": "TCP",
+      "src_ip": null,
+      "dst_port": 23,
+      "enabled": true
+    }
+  ]
+}
